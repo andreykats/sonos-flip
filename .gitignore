@@ -1,0 +1,8 @@
+__pycache__/
+*.pyc
+.DS_Store
+# local settings and state if you run it from the checkout
+config.toml
+state.json
+# your own values for examples/deploy-ssh.sh
+deploy.env

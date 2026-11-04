@@ -1,0 +1,93 @@
+# sonos-flip configuration
+#
+# sonos-flip moves two Sonos speakers between two modes:
+#   desk     the two speakers are a standalone stereo pair (AirPlay, line-in and Bluetooth work)
+#   theater  the two speakers are your soundbar's rear surrounds
+# Sonos turns off AirPlay, line-in and Bluetooth on surrounds, so a speaker can't do both at once.
+#
+# This file lives in the folder mounted at /config. After changing it, restart the container.
+# If a setting is wrong, the container stops at startup and its log says which one and why.
+# Only the [speakers] section is required; every other line shows the default and can be left as is.
+# Text values go in "quotes"; numbers and true/false don't.
+
+# Log detail: "debug", "info", "warning" or "error". "debug" also logs every request to the speakers.
+# (Keep this line above the first [section]: anything below a [section] heading belongs to it.)
+log_level = "info"
+
+
+[speakers]
+# Each speaker can be given as its room name, exactly as shown in the Sonos app, or as its IP
+# address. With names, nothing else is needed: the service finds the speakers on the network and
+# follows them if their IP addresses change. (Finding them by name needs the container on the
+# host network: --network host.)
+
+# The soundbar (Arc, Arc Ultra, Beam, Ray, ...). Example: "Living Room" or "192.168.1.20"
+soundbar = ""
+
+# The speaker that plays the left channel in desk mode and the left surround in theater mode, and
+# the one that plays the right. Use the name each speaker has on its own, before pairing or bonding
+# (for example "Desk Left"). While they are paired or bonded, Sonos hides those names; the service
+# then recognises them by their place in the pair or on the soundbar, and remembers them.
+left = ""
+right = ""
+
+# Room name for the stereo pair in desk mode. Sonos names a new pair after its left speaker
+# (for example "Desk Left"); the service renames it to this after every switch, so the name you
+# pick in AirPlay or the Sonos app stays the same. Example: "Desk"
+pair_name = ""
+
+
+[automation]
+# Switch to theater when the soundbar starts playing TV audio (from HDMI or optical).
+theater_on_tv = true
+
+# Switch back to desk once the TV audio has stopped for this many minutes. 0 = right away,
+# "off" = never automatically. Note: after a TV or streaming box goes to sleep, some soundbars
+# keep reporting TV input for several minutes (an Arc Ultra with an Apple TV: about 10 minutes)
+# before they let go of it; that time comes on top of this setting.
+desk_after_tv_min = 0
+
+# How often the soundbar is checked, in seconds.
+poll_sec = 3
+
+# What counts as TV audio: the start of the soundbar's current source. The default matches the
+# TV input of current Sonos soundbars. To check yours, play something on the TV and open
+# http://<this host>:<port>/soundbar; current_uri is the source.
+tv_source_prefix = "x-sonos-htastream:"
+
+
+[line_in]
+# If one of the two speakers has a Sonos Line-In Adapter (or Combo Adapter), set speaker to
+# "left" or "right": after every switch to desk the pair plays that line-in, at the volume below,
+# so the device on the line-in controls the level. The volume the pair had is saved and set back
+# on the next switch to theater. "off" leaves the source and the volume alone.
+speaker = "off"
+
+# Pair volume while line-in plays, 0-100.
+volume = 100
+
+
+[http]
+# Port for the HTTP API (GET /status, POST /desk, POST /theater, ...). The API has no password:
+# anyone who can reach this port can switch the speakers. Keep it on your home network.
+port = 8080
+
+# Address to listen on. "0.0.0.0" = every network interface of the host.
+bind = "0.0.0.0"
+
+
+[timing]
+# You shouldn't need to change these. They control how long the service waits for speakers to
+# settle after a change.
+
+# Seconds to wait for a speaker to show up on its own after leaving a pair or the soundbar.
+# Observed: 3 to 15+ seconds.
+settle_timeout_sec = 60
+
+# How many times to retry when a speaker answers "not settled yet" (UPnP error 800).
+# The wait between tries starts at 2 s and grows to 12 s.
+retries_not_ready = 8
+
+# Seconds to pause before pairing or bonding, so the soundbar settles too.
+pause_before_bond_sec = 4
+

@@ -1,0 +1,11 @@
+services:
+  sonos-flip:
+    image: andreykats/sonos-flip:latest
+    container_name: sonos-flip
+    # Host networking is needed: Sonos speakers are found (multicast) and controlled on the local network.
+    network_mode: host
+    restart: unless-stopped
+    environment:
+      - TZ=Etc/UTC            # your time zone, for log timestamps (e.g. Europe/Berlin)
+    volumes:
+      - ./config:/config      # config.toml (settings) and state.json

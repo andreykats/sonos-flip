@@ -1,0 +1,5 @@
+*
+!Dockerfile
+!config.example.toml
+!sonos_flip/
+sonos_flip/__pycache__
