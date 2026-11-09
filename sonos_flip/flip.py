@@ -329,6 +329,81 @@ class Flip:
                         v, e)
             return {"volume": f"restore failed: {e}"}
 
+    # ----------------------------------------------------------------- EQ ----
+
+    def speaker_eq(self, uid):
+        """One speaker's bass, treble, loudness and balance (left/right channel volume)."""
+        ip = self.ip(uid)
+
+        def get(action, tag, args=""):
+            return sonos.tag_text(sonos.soap(ip, "RenderingControl", action, args, instance=True), tag)
+
+        def number(key, value):
+            lo, hi = state.EQ_RANGES[key]
+            try:
+                n = int(value)
+            except (TypeError, ValueError):
+                n = None
+            if n is None or not lo <= n <= hi:
+                raise SonosError(f"{uid} reported an invalid {key} ({value!r})")
+            return n
+
+        loudness = get("GetLoudness", "CurrentLoudness", "<Channel>Master</Channel>")
+        if loudness not in ("0", "1"):
+            raise SonosError(f"{uid} reported an invalid loudness ({loudness!r})")
+        return {
+            "bass": number("bass", get("GetBass", "CurrentBass")),
+            "treble": number("treble", get("GetTreble", "CurrentTreble")),
+            "loudness": loudness == "1",
+            "left_volume": number("left_volume", get("GetVolume", "CurrentVolume", "<Channel>LF</Channel>")),
+            "right_volume": number("right_volume", get("GetVolume", "CurrentVolume", "<Channel>RF</Channel>")),
+        }
+
+    def set_speaker_eq(self, uid, eq):
+        ip = self.ip(uid)
+
+        def call(action, args):
+            sonos.soap(ip, "RenderingControl", action, args, instance=True)
+
+        call("SetBass", f"<DesiredBass>{eq['bass']}</DesiredBass>")
+        call("SetTreble", f"<DesiredTreble>{eq['treble']}</DesiredTreble>")
+        call("SetLoudness", f"<Channel>Master</Channel><DesiredLoudness>{int(eq['loudness'])}</DesiredLoudness>")
+        call("SetVolume", f"<Channel>LF</Channel><DesiredVolume>{eq['left_volume']}</DesiredVolume>")
+        call("SetVolume", f"<Channel>RF</Channel><DesiredVolume>{eq['right_volume']}</DesiredVolume>")
+
+    @staticmethod
+    def describe_eq(eq):
+        return (f"bass {eq['bass']}, treble {eq['treble']}, loudness {'on' if eq['loudness'] else 'off'}, "
+                f"balance L{eq['left_volume']}/R{eq['right_volume']}")
+
+    def save_eq(self):
+        """Before the pair is split for theater: save both speakers' EQ, to set back after re-pairing.
+        A failure keeps any earlier saved EQ and never fails the switch itself."""
+        try:
+            eq = {uid: self.speaker_eq(uid) for uid in (self.left_uid, self.right_uid)}
+            state.update(self.cfg.state_file, saved_eq=eq)
+        except (SonosError, OSError) as e:
+            log.warning("  Couldn't save the pair's EQ (%s); it may not come back after the next switch to desk", e)
+            return {"eq": f"save failed: {e}"}
+        log.info("  Saved the pair's EQ to set back later: %s", self.describe_eq(eq[self.left_uid]))
+        return {"eq": "saved"}
+
+    def restore_eq(self):
+        """After re-pairing for desk: set back the EQ saved by save_eq. Never fails the switch itself."""
+        saved = state.saved_eq(self.cfg.state_file)
+        todo = [(uid, role, saved[uid]) for uid, role in ((self.left_uid, "left"), (self.right_uid, "right"))
+                if uid in saved]
+        if not todo:
+            return {}
+        try:
+            for uid, role, eq in todo:
+                self.retry_not_ready(lambda: self.set_speaker_eq(uid, eq),
+                                     f"EQ on the {role} speaker ({self.describe_eq(eq)})")
+        except SonosError as e:
+            log.warning("  Couldn't set the pair's EQ back (%s); set it in the Sonos app", e)
+            return {"eq": f"restore failed: {e}"}
+        return {"eq": "restored"}
+
     # --------------------------------------------------------------- modes ----
 
     def switch(self, mode):
@@ -368,7 +443,8 @@ class Flip:
         time.sleep(self.cfg.pause_before_bond_sec)
         self.retry_not_ready(self.create_pair, "create stereo pair")
         self.ensure_pair_name()
-        return {"changed": True, **self.start_line_in(), **self.state()}
+        eq = self.restore_eq()
+        return {"changed": True, **eq, **self.start_line_in(), **self.state()}
 
     def _to_theater(self):
         st = self.state()
@@ -378,7 +454,7 @@ class Flip:
         log.info("Switching to theater: splitting the pair and adding the speakers to the soundbar")
         restored = {}
         if self.right_uid in channel_map(st["pair_map"]):
-            restored = self.restore_volume()
+            restored = {**self.restore_volume(), **self.save_eq()}
             self.separate_pair()
         # Skip a speaker that is already bonded (an earlier switch may have stopped part-way).
         surrounds = channel_map(st["surround_map"])

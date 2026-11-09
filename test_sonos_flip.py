@@ -55,6 +55,13 @@ def theater(*sats, names=None):
 
 
 BONDED = theater((L, "LR,LTR"), (R, "RR,RTR"))
+
+# What a speaker answers to the EQ reads, and the EQ that reads as (LF and RF both answer 23 here, so the
+# tests that write EQ use their own values)
+EQ_REPLY = ("<CurrentBass>-3</CurrentBass><CurrentTreble>2</CurrentTreble><CurrentLoudness>1</CurrentLoudness>"
+            "<CurrentVolume>23</CurrentVolume>")
+EQ_READ = {"bass": -3, "treble": 2, "loudness": True, "left_volume": 23, "right_volume": 23}
+EQ = {**EQ_READ, "left_volume": 100, "right_volume": 90}
 APART = theater(names={L: "Desk L", R: "Desk R"})
 
 
@@ -228,10 +235,10 @@ class Switching(TempDir):
         return self.run_switch(f, "desk", [BONDED, theater(), theater(), DESK], soap_side_effect)
 
     def theater_switch(self, soap_side_effect=None):
-        """A full desk -> theater switch; returns (result, soap mock)."""
+        """A full desk -> theater switch; returns (result, soap mock). Speakers report EQ_REPLY."""
         f = self.make_flip(DESK)
         return self.run_switch(f, "theater", [DESK, theater(), theater(), BONDED], soap_side_effect,
-                               soap_return="")
+                               soap_return=EQ_REPLY)
 
     def test_desk_recipe(self):
         out, soap = self.desk_switch()
@@ -246,7 +253,7 @@ class Switching(TempDir):
 
     def test_theater_recipe(self):
         out, soap = self.theater_switch()
-        self.assertEqual([c.args[2:4] for c in soap.call_args_list], [
+        self.assertEqual([c.args[2:4] for c in soap.call_args_list if c.args[1] == "DeviceProperties"], [
             ("SeparateStereoPair", f"<ChannelMapSet>{PAIR}</ChannelMapSet>"),
             ("AddHTSatellite", f"<HTSatChanMapSet>{SB}:CC;{L}:LR</HTSatChanMapSet>"),
             ("AddHTSatellite", f"<HTSatChanMapSet>{SB}:CC;{R}:RR</HTSatChanMapSet>"),
@@ -355,7 +362,7 @@ class Switching(TempDir):
     def test_theater_restores_volume_before_split(self):
         state.update(self.state_file, saved_volume=23)
         out, soap = self.theater_switch()
-        self.assertEqual([c.args[2] for c in soap.call_args_list],
+        self.assertEqual([c.args[2] for c in soap.call_args_list if not c.args[2].startswith("Get")],
                          ["SetVolume", "SeparateStereoPair", "AddHTSatellite", "AddHTSatellite"])
         self.assertEqual(soap.call_args_list[0].args[:4], (IP[L], "RenderingControl", "SetVolume",
                                                            "<Channel>Master</Channel><DesiredVolume>23</DesiredVolume>"))
@@ -364,7 +371,7 @@ class Switching(TempDir):
 
     def test_theater_without_saved_volume_leaves_it(self):
         out, soap = self.theater_switch()
-        self.assertFalse([c for c in soap.call_args_list if c.args[1] == "RenderingControl"])
+        self.assertFalse([c for c in soap.call_args_list if c.args[2] == "SetVolume"])
         self.assertNotIn("volume", out)
 
     def test_theater_restore_failure_keeps_value_and_switches(self):
@@ -378,6 +385,82 @@ class Switching(TempDir):
         self.assertEqual(out["mode"], "theater")
         self.assertTrue(out["volume"].startswith("restore failed"))
         self.assertEqual(self.saved()["saved_volume"], 23)
+
+    # -- EQ --
+
+    def test_theater_saves_eq_before_split(self):
+        out, soap = self.theater_switch()
+        actions = [c.args[2] for c in soap.call_args_list]
+        self.assertLess(actions.index("GetBass"), actions.index("SeparateStereoPair"))
+        self.assertEqual({c.args[0] for c in soap.call_args_list if c.args[2] == "GetBass"}, {IP[L], IP[R]})
+        self.assertEqual(self.saved()["saved_eq"], {L: EQ_READ, R: EQ_READ})
+        self.assertEqual(out["eq"], "saved")
+
+    def test_desk_restores_eq_after_pairing(self):
+        state.update(self.state_file, saved_eq={L: EQ, R: {**EQ, "bass": 4, "loudness": False}})
+        out, soap = self.desk_switch()
+        actions = [c.args[2] for c in soap.call_args_list]
+        self.assertLess(actions.index("CreateStereoPair"), actions.index("SetBass"))
+        sets = [c.args[:4] for c in soap.call_args_list if c.args[1] == "RenderingControl"]
+        self.assertEqual(sets, [
+            (IP[L], "RenderingControl", "SetBass", "<DesiredBass>-3</DesiredBass>"),
+            (IP[L], "RenderingControl", "SetTreble", "<DesiredTreble>2</DesiredTreble>"),
+            (IP[L], "RenderingControl", "SetLoudness", "<Channel>Master</Channel><DesiredLoudness>1</DesiredLoudness>"),
+            (IP[L], "RenderingControl", "SetVolume", "<Channel>LF</Channel><DesiredVolume>100</DesiredVolume>"),
+            (IP[L], "RenderingControl", "SetVolume", "<Channel>RF</Channel><DesiredVolume>90</DesiredVolume>"),
+            (IP[R], "RenderingControl", "SetBass", "<DesiredBass>4</DesiredBass>"),
+            (IP[R], "RenderingControl", "SetTreble", "<DesiredTreble>2</DesiredTreble>"),
+            (IP[R], "RenderingControl", "SetLoudness", "<Channel>Master</Channel><DesiredLoudness>0</DesiredLoudness>"),
+            (IP[R], "RenderingControl", "SetVolume", "<Channel>LF</Channel><DesiredVolume>100</DesiredVolume>"),
+            (IP[R], "RenderingControl", "SetVolume", "<Channel>RF</Channel><DesiredVolume>90</DesiredVolume>"),
+        ])
+        self.assertEqual((out["eq"], out["mode"]), ("restored", "desk"))
+
+    def test_desk_eq_restore_retries_while_not_settled(self):
+        state.update(self.state_file, saved_eq={L: EQ, R: EQ})
+        n = []
+
+        def flaky(ip, service, action, *a, **k):
+            if action == "SetBass" and len(n) < 2:
+                n.append(1)
+                raise sonos.UPnPError(ip, action, 800)
+            return "<CurrentZoneName>Desk</CurrentZoneName>"
+        out, soap = self.desk_switch(soap_side_effect=flaky)
+        self.assertEqual([c.args[2] for c in soap.call_args_list].count("SetBass"), 4)
+        self.assertEqual(out["eq"], "restored")
+
+    def test_desk_eq_restore_failure_does_not_fail_switch(self):
+        state.update(self.state_file, saved_eq={L: EQ, R: EQ})
+
+        def fail_rc(ip, service, action, *a, **k):
+            if service == "RenderingControl":
+                raise sonos.UPnPError(ip, action, 402)
+            return "<CurrentZoneName>Desk</CurrentZoneName>"
+        out, _ = self.desk_switch(soap_side_effect=fail_rc)
+        self.assertEqual(out["mode"], "desk")
+        self.assertTrue(out["eq"].startswith("restore failed"))
+
+    def test_theater_eq_save_failure_keeps_earlier_and_switches(self):
+        earlier = {L: {**EQ, "bass": 5}, R: EQ}
+        state.update(self.state_file, saved_eq=earlier)
+        out, _ = self.theater_switch(soap_side_effect=lambda ip, svc, action, *a, **k:
+                                     "<CurrentBass>99</CurrentBass>" if action == "GetBass" else EQ_REPLY)
+        self.assertEqual(out["mode"], "theater")
+        self.assertTrue(out["eq"].startswith("save failed"))
+        self.assertEqual(self.saved()["saved_eq"], earlier)
+
+    def test_already_desk_leaves_eq(self):
+        state.update(self.state_file, saved_eq={L: EQ, R: EQ})
+        f = self.make_flip(DESK)
+        out, soap = self.run_switch(f, "desk", [DESK])
+        self.assertFalse([c for c in soap.call_args_list if c.args[1] == "RenderingControl"])
+        self.assertNotIn("eq", out)
+
+    def test_invalid_saved_eq_is_ignored(self):
+        state.update(self.state_file, saved_eq={L: EQ, R: {**EQ, "bass": 11}, "x": "nope"})
+        self.assertEqual(state.saved_eq(self.state_file), {L: EQ})
+        state.update(self.state_file, saved_eq=[1, 2])
+        self.assertEqual(state.saved_eq(self.state_file), {})
 
     def test_corrupt_state_file_is_ignored(self):
         with open(self.state_file, "w") as f:

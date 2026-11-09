@@ -88,7 +88,7 @@ Everything is in `config.toml` in the folder mounted at `/config`. [config.examp
 
 `TZ` (environment variable) sets the time zone of the log timestamps.
 
-The same folder holds `state.json`, which the service writes itself: the speakers it found, and the volume to set back after line-in. Deleting it is safe.
+The same folder holds `state.json`, which the service writes itself: the speakers it found, the volume to set back after line-in, and the pair's EQ to set back after theater. Deleting it is safe; the next desk switch then keeps Sonos's defaults.
 
 ## HTTP API
 
@@ -131,6 +131,7 @@ Responses are JSON. Errors come as `{"error": "..."}`: `503` while the speakers 
 - **A half-finished switch is completed** by the next request, so the speakers never get stuck.
 - **Restarting the container never switches anything.** On startup it only reads the current state.
 - **The pair keeps its name.** Sonos names a new pair after its left speaker; the service renames it to `pair_name` after every switch, so AirPlay targets and automations keep working.
+- **The pair keeps its EQ.** Sonos loses the speakers' bass, treble, loudness and balance when they become surrounds. The service saves them just before splitting the pair for theater, and sets them back after re-pairing for desk. If that fails, the switch still completes, and the response says `"eq": "save failed: …"` or `"restore failed: …"`. Trueplay tuning can't be set back this way; if a switch drops it, run Trueplay again in the Sonos app.
 - **Line-in** (`[line_in] speaker`): after every switch to desk, the pair plays the line-in of the speaker with the Sonos Line-In Adapter, at `[line_in] volume`, so the device plugged into it controls the level. The pair's previous volume is saved and set back on the next switch to theater. If line-in can't start, the switch still completes and the volume isn't touched.
 
 ### If something goes wrong
