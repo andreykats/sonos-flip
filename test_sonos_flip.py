@@ -14,6 +14,9 @@ import urllib.request
 from http.server import ThreadingHTTPServer
 from unittest import mock
 
+import importlib.util
+
+import sonos_flip
 from sonos_flip import __main__ as main_mod
 from sonos_flip import config, flip as flip_mod, server, sonos, state, watcher
 
@@ -694,3 +697,60 @@ class Startup(TempDir):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+# ------------------------------------------------------------ release notes ----
+
+_spec = importlib.util.spec_from_file_location("release_notes", os.path.join(HERE, "scripts", "release_notes.py"))
+release_notes = importlib.util.module_from_spec(_spec)
+_spec.loader.exec_module(release_notes)
+
+CHANGELOG = """# Changelog
+
+Intro.
+
+## Unreleased
+
+- Not yet.
+
+## 1.1.0 - 2026-02-01
+
+### Added
+
+- Thing.
+
+## 1.0.0 - 2026-01-01
+
+First.
+"""
+
+
+class ReleaseNotes(unittest.TestCase):
+    def test_notes_for_a_version(self):
+        self.assertEqual(release_notes.notes(CHANGELOG, "1.1.0"), "### Added\n\n- Thing.\n")
+        self.assertEqual(release_notes.notes(CHANGELOG, "1.0.0"), "First.\n")
+
+    def test_missing_or_empty_version_is_an_error(self):
+        with self.assertRaisesRegex(release_notes.ChangelogError, "no section for 2.0.0"):
+            release_notes.notes(CHANGELOG, "2.0.0")
+        with self.assertRaisesRegex(release_notes.ChangelogError, "empty"):
+            release_notes.notes("## 1.0.0 - 2026-01-01\n\n", "1.0.0")
+
+    def test_malformed_heading_is_an_error(self):
+        for bad in ("## 1.0 - 2026-01-01\n", "## 1.0.0\n", "## [1.0.0] - 2026-01-01\n"):
+            with self.assertRaises(release_notes.ChangelogError, msg=bad):
+                release_notes.sections(bad)
+
+    def test_overview_appends_released_sections_one_level_down(self):
+        out = release_notes.overview("# App\n\nReadme.\n", CHANGELOG)
+        self.assertEqual(out, "# App\n\nReadme.\n\n## Changelog\n\n### 1.1.0 - 2026-02-01\n\n#### Added\n\n"
+                              "- Thing.\n\n### 1.0.0 - 2026-01-01\n\nFirst.\n")
+
+    def test_changelog_has_current_version(self):
+        """Bumping __version__ needs a CHANGELOG.md entry; the release workflow publishes it."""
+        with open(os.path.join(HERE, "CHANGELOG.md")) as f:
+            changelog = f.read()
+        with open(os.path.join(HERE, "README.md")) as f:
+            readme = f.read()
+        self.assertTrue(release_notes.notes(changelog, sonos_flip.__version__).strip())
+        self.assertLess(len(release_notes.overview(readme, changelog).encode()), 25000, "Docker Hub overview limit")

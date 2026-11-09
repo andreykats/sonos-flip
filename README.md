@@ -184,7 +184,7 @@ CONFIG_FILE=./config.toml python3 -m sonos_flip
 
 [examples/deploy-ssh.sh](examples/deploy-ssh.sh) builds the image from the checkout on a remote Docker host and restarts the container there.
 
-Releases: pushing a tag `vX.Y.Z` that matches `sonos_flip.__version__` runs the tests and publishes `andreykats/sonos-flip:X.Y.Z`, `:X.Y` and `:latest` for amd64 and arm64 ([workflow](.github/workflows/docker.yml)).
+Changes go under "Unreleased" in [CHANGELOG.md](CHANGELOG.md). To release: rename that section to `X.Y.Z - YYYY-MM-DD`, set `sonos_flip.__version__` to `X.Y.Z` (a test fails if the changelog has no entry for it), commit, and push a tag `vX.Y.Z`. The [workflow](.github/workflows/docker.yml) then runs the tests, publishes `andreykats/sonos-flip:X.Y.Z`, `:X.Y` and `:latest` for amd64 and arm64, creates the GitHub release with that version's changelog section, and updates the Docker Hub overview (this README plus the changelog). To rewrite an existing release's notes after editing the changelog, run the workflow by hand with its tag.
 
 ## Credits
 

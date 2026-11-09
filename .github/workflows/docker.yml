@@ -1,6 +1,11 @@
 # Tests on every push and pull request. A version tag (v1.2.3) also builds the image for
-# amd64 and arm64 and pushes it to Docker Hub as andreykats/sonos-flip:1.2.3, :1.2 and :latest.
-# Needs repository variable DOCKERHUB_USERNAME and secret DOCKERHUB_TOKEN (a Docker Hub access token).
+# amd64 and arm64 and pushes it to Docker Hub as andreykats/sonos-flip:1.2.3, :1.2 and :latest,
+# then publishes the release notes: the tag's CHANGELOG.md section as its GitHub release, and the
+# README plus the changelog as the Docker Hub overview.
+# Run it by hand ("Run workflow", with a tag) to (re)write the notes of an existing release from
+# the current CHANGELOG.md without building anything.
+# Needs repository variable DOCKERHUB_USERNAME and secret DOCKERHUB_TOKEN (a Docker Hub access token
+# with read/write/delete scope; the overview update needs delete).
 name: test and publish
 
 on:
@@ -8,6 +13,11 @@ on:
     branches: [main]
     tags: ["v*"]
   pull_request:
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Existing release tag (vX.Y.Z) to write the release notes for"
+        required: true
 
 jobs:
   test:
@@ -25,10 +35,11 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
-      - name: Tag matches __version__
+      - name: Tag matches __version__ and has a changelog entry
         run: |
           v=$(python3 -c 'import sonos_flip; print(sonos_flip.__version__)')
           [ "v$v" = "$GITHUB_REF_NAME" ] || { echo "tag $GITHUB_REF_NAME but sonos_flip.__version__ is $v"; exit 1; }
+          python3 scripts/release_notes.py notes "$v" >/dev/null
       - id: meta
         uses: docker/metadata-action@v6
         with:
@@ -49,3 +60,39 @@ jobs:
           push: true
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
+
+  release-notes:
+    needs: [test, publish]
+    # after a tag's image is published, or when run by hand (publish is skipped then)
+    if: >-
+      !cancelled() && needs.test.result == 'success' &&
+      (needs.publish.result == 'success' || github.event_name == 'workflow_dispatch')
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    env:
+      TAG: ${{ github.event_name == 'workflow_dispatch' && inputs.tag || github.ref_name }}
+    steps:
+      - uses: actions/checkout@v7
+      - name: Notes from CHANGELOG.md
+        run: |
+          [[ "$TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]] || { echo "not a release tag: $TAG"; exit 1; }
+          python3 scripts/release_notes.py notes "${TAG#v}" > release-notes.md
+          python3 scripts/release_notes.py overview > dockerhub-overview.md
+      - name: GitHub release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            gh release edit "$TAG" --title "sonos-flip ${TAG#v}" --notes-file release-notes.md
+          else
+            gh release create "$TAG" --verify-tag --title "sonos-flip ${TAG#v}" --notes-file release-notes.md
+          fi
+      - name: Docker Hub overview
+        uses: peter-evans/dockerhub-description@v5
+        with:
+          username: ${{ vars.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+          repository: andreykats/sonos-flip
+          readme-filepath: ./dockerhub-overview.md
+          enable-url-completion: true
